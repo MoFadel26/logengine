@@ -6,7 +6,7 @@
 # cross-compiles for TARGETOS/TARGETARCH via GOOS/GOARCH. This is what
 # makes `docker buildx build --platform linux/arm64,linux/amd64` fast on
 # a single host instead of emulating the target arch with QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 
 ARG TARGETOS
 ARG TARGETARCH
