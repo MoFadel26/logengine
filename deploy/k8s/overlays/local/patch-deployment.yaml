@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logengine-api
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: api
+          # kind/k3d have no image registry pull access; images must be
+          # loaded directly into the cluster (e.g. `kind load docker-image`),
+          # so avoid re-pulling a tag that only exists locally.
+          imagePullPolicy: IfNotPresent
