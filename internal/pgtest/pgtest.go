@@ -1,11 +1,17 @@
 // Package pgtest starts a throwaway Postgres for integration tests.
 //
-// The DDL mirrors the target logs schema (owned by the schema track) so these
-// tests exercise the same shape the service writes to in production.
+// The schema is applied from db/migrations, the same files golang-migrate runs
+// in production, so these tests cannot pass against a schema that has drifted
+// from the migrations.
 package pgtest
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
 	"testing"
 	"time"
 
@@ -14,43 +20,59 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-const schemaDDL = `
-SET TIME ZONE 'UTC';
+// partitionSpan is how many days either side of today get a partition, so
+// tests writing records around "now" have somewhere to put them.
+const partitionSpan = 1
 
-CREATE TABLE logs (
-    tenant_id UUID        NOT NULL,
-    ts        TIMESTAMPTZ NOT NULL,
-    id        BIGINT      GENERATED ALWAYS AS IDENTITY,
-    level     TEXT,
-    source    TEXT,
-    message   TEXT,
-    attrs     JSONB,
-    PRIMARY KEY (tenant_id, ts, id)
-) PARTITION BY RANGE (ts);
+// migrationsDir resolves db/migrations relative to this file, so it works
+// whichever package directory the test binary runs in.
+func migrationsDir() (string, error) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("cannot resolve caller path")
+	}
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "db", "migrations")
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("migrations directory %s: %w", abs, err)
+	}
+	return abs, nil
+}
 
-DO $$
-DECLARE
-    d date;
-BEGIN
-    FOR d IN
-        SELECT generate_series(
-            (now() AT TIME ZONE 'UTC')::date - 1,
-            (now() AT TIME ZONE 'UTC')::date + 1,
-            interval '1 day'
-        )::date
-    LOOP
-        EXECUTE format(
-            'CREATE TABLE logs_%s PARTITION OF logs FOR VALUES FROM (%L) TO (%L)',
-            to_char(d, 'YYYYMMDD'),
-            to_char(d, 'YYYY-MM-DD') || ' 00:00:00+00',
-            to_char(d + 1, 'YYYY-MM-DD') || ' 00:00:00+00'
-        );
-    END LOOP;
-END $$;
-`
+// applyMigrations runs every *.up.sql in lexical order, which is the order
+// golang-migrate applies them.
+func applyMigrations(ctx context.Context, conn *pgx.Conn) error {
+	dir, err := migrationsDir()
+	if err != nil {
+		return err
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.up.sql"))
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("no *.up.sql files in %s", dir)
+	}
+	sort.Strings(files)
 
-// Start boots a Postgres container with the logs table created and returns its
-// DSN. The container is terminated when the test finishes.
+	for _, f := range files {
+		sqlBytes, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", filepath.Base(f), err)
+		}
+		if _, err := conn.Exec(ctx, string(sqlBytes)); err != nil {
+			return fmt.Errorf("apply %s: %w", filepath.Base(f), err)
+		}
+	}
+	return nil
+}
+
+// Start boots a Postgres container with db/migrations applied and partitions
+// created around today, and returns its DSN. The container is terminated when
+// the test finishes.
 func Start(t *testing.T) string {
 	t.Helper()
 	if testing.Short() {
@@ -78,15 +100,29 @@ func Start(t *testing.T) string {
 		t.Fatalf("connection string: %v", err)
 	}
 
-	setupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	setupCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	conn, err := pgx.Connect(setupCtx, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	defer conn.Close(setupCtx)
-	if _, err := conn.Exec(setupCtx, schemaDDL); err != nil {
-		t.Fatalf("apply schema: %v", err)
+
+	// CURRENT_DATE below is session-dependent; pin it to UTC so partitions
+	// line up with the UTC timestamps the tests write.
+	if _, err := conn.Exec(setupCtx, "SET TIME ZONE 'UTC'"); err != nil {
+		t.Fatalf("set time zone: %v", err)
+	}
+	if err := applyMigrations(setupCtx, conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	// Uses the partition helper the migrations define, so the tests exercise
+	// it rather than a hand-rolled copy.
+	if _, err := conn.Exec(setupCtx,
+		"SELECT logs_create_partitions_between(CURRENT_DATE - $1::int, CURRENT_DATE + $2::int)",
+		partitionSpan, partitionSpan,
+	); err != nil {
+		t.Fatalf("create partitions: %v", err)
 	}
 	return dsn
 }
