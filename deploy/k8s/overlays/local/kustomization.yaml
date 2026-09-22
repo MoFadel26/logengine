@@ -5,6 +5,7 @@ namespace: logengine-local
 
 resources:
   - namespace.yaml
+  - postgres.yaml
   - ../../base
 
 images:

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,10 @@ type fakeWriter struct {
 	batchSizes []int
 	err        error
 	delay      time.Duration
+	calls      int
+	// failures counts down: the first failures calls return an error, after
+	// which writes succeed. Models a transient database outage.
+	failures int
 }
 
 func (f *fakeWriter) WriteBatch(_ context.Context, recs []logrec.Record) error {
@@ -30,6 +35,11 @@ func (f *fakeWriter) WriteBatch(_ context.Context, recs []logrec.Record) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
+	if f.failures > 0 {
+		f.failures--
+		return fmt.Errorf("transient failure %d", f.calls)
+	}
 	if f.err != nil {
 		return f.err
 	}
@@ -180,12 +190,15 @@ func TestWaitRespectsContextDeadline(t *testing.T) {
 	}
 }
 
-func TestWriteErrorIsCountedAndDoesNotStall(t *testing.T) {
+// A transient outage must cost latency, not data: the batch is retried until
+// it lands, and nothing is reported lost.
+func TestTransientWriteFailureIsRetriedUntilItSucceeds(t *testing.T) {
 	q := queue.New(8)
-	w := &fakeWriter{err: errors.New("boom")}
-	m := metrics.New(prometheus.NewRegistry())
-	p := New(q.C(), w, Config{Workers: 1, BatchSize: 2, FlushInterval: time.Hour, WriteTimeout: time.Second}, m, slog.New(slog.DiscardHandler))
-	p.Start()
+	w := &fakeWriter{failures: 3}
+	p := newPool(t, q, w, Config{
+		Workers: 1, BatchSize: 2, FlushInterval: time.Hour, WriteTimeout: time.Second,
+		RetryInitial: time.Millisecond, RetryMax: 5 * time.Millisecond,
+	})
 
 	q.TryEnqueue(rec("a"))
 	q.TryEnqueue(rec("b"))
@@ -193,6 +206,55 @@ func TestWriteErrorIsCountedAndDoesNotStall(t *testing.T) {
 
 	if err := p.Wait(context.Background()); err != nil {
 		t.Fatalf("Wait: %v", err)
+	}
+	if got := p.Lost(); got != 0 {
+		t.Fatalf("Lost() = %d, want 0: a retried batch must not be reported lost", got)
+	}
+	msgs, _ := w.snapshot()
+	if len(msgs) != 2 {
+		t.Fatalf("wrote %d records, want 2 (%v)", len(msgs), msgs)
+	}
+	w.mu.Lock()
+	calls := w.calls
+	w.mu.Unlock()
+	if calls != 4 {
+		t.Fatalf("WriteBatch called %d times, want 4 (3 failures then success)", calls)
+	}
+}
+
+// When the shutdown deadline passes with the database still unreachable, the
+// batch is abandoned, counted, and surfaced as an error so the process can
+// exit non-zero instead of exiting 0 on lost data.
+func TestBatchAbandonedAtShutdownIsReportedAsLost(t *testing.T) {
+	q := queue.New(8)
+	w := &fakeWriter{err: errors.New("database is down")}
+	p := newPool(t, q, w, Config{
+		Workers: 1, BatchSize: 2, FlushInterval: time.Hour, WriteTimeout: time.Second,
+		RetryInitial: time.Millisecond, RetryMax: 5 * time.Millisecond,
+	})
+
+	q.TryEnqueue(rec("a"))
+	q.TryEnqueue(rec("b"))
+	q.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := p.Wait(ctx)
+	if err == nil {
+		t.Fatal("Wait returned nil, want an error reporting the lost records")
+	}
+	if !strings.Contains(err.Error(), "could not be written") {
+		t.Fatalf("Wait error = %v, want it to report unwritten records", err)
+	}
+	if got := p.Lost(); got != 2 {
+		t.Fatalf("Lost() = %d, want 2", got)
+	}
+	w.mu.Lock()
+	calls := w.calls
+	w.mu.Unlock()
+	if calls < 2 {
+		t.Fatalf("WriteBatch called %d times, want >= 2: the batch should have been retried", calls)
 	}
 }
 

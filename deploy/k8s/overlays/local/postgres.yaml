@@ -1,0 +1,91 @@
+# Local-only Postgres for kind/k3d, so the base Secret's DATABASE_URL
+# (postgres://logengine:logengine@postgres:5432/logengine) resolves without
+# any further patching. This is development scaffolding: it is deliberately
+# confined to overlays/local and is not part of the base, which expects a
+# managed database in any real environment.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres
+type: Opaque
+stringData:
+  POSTGRES_DB: logengine
+  POSTGRES_USER: logengine
+  POSTGRES_PASSWORD: logengine
+---
+# Headless Service: the name `postgres` is what DATABASE_URL points at, and
+# it also governs the StatefulSet's stable network identity.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom:
+            - secretRef:
+                name: postgres
+          env:
+            # The mounted volume is the mount point itself, so keep the data
+            # directory one level below it: initdb requires an empty dir.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "logengine", "-d", "logengine"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "logengine", "-d", "logengine"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
