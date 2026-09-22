@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Editor swap files
+*.swp
+*.swo
+
+# Go
+/bin/
+*.test
+*.out
+
+# Local env
+.env
+.env.local
