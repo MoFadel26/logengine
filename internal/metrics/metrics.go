@@ -9,6 +9,7 @@ type Metrics struct {
 
 	Accepted     prometheus.Counter
 	Dropped      prometheus.Counter
+	Lost         prometheus.Counter
 	RowsWritten  prometheus.Counter
 	WriteErrors  prometheus.Counter
 	BatchLatency prometheus.Histogram
@@ -26,6 +27,10 @@ func New(reg *prometheus.Registry) *Metrics {
 		Dropped: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "logengine_logs_dropped_total",
 			Help: "Log records rejected because the ingest queue was full or closed.",
+		}),
+		Lost: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "logengine_logs_lost_total",
+			Help: "Accepted log records abandoned unwritten because retries ran out of time.",
 		}),
 		RowsWritten: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "logengine_rows_written_total",
@@ -46,7 +51,7 @@ func New(reg *prometheus.Registry) *Metrics {
 			Buckets: []float64{1, 10, 50, 100, 250, 500, 1000, 5000},
 		}),
 	}
-	reg.MustRegister(m.Accepted, m.Dropped, m.RowsWritten, m.WriteErrors, m.BatchLatency, m.BatchSize)
+	reg.MustRegister(m.Accepted, m.Dropped, m.Lost, m.RowsWritten, m.WriteErrors, m.BatchLatency, m.BatchSize)
 	return m
 }
 

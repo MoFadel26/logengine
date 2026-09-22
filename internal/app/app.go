@@ -26,6 +26,8 @@ const (
 	flushInterval     = 500 * time.Millisecond
 	writeTimeout      = 10 * time.Second
 	readHeaderTimeout = 10 * time.Second
+	retryInitial      = 100 * time.Millisecond
+	retryMax          = 5 * time.Second
 )
 
 // App is the running service.
@@ -62,6 +64,8 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, error)
 		BatchSize:     batchSize,
 		FlushInterval: flushInterval,
 		WriteTimeout:  writeTimeout,
+		RetryInitial:  retryInitial,
+		RetryMax:      retryMax,
 	}, m, log)
 
 	api := httpapi.New(q, m, reg, log)
@@ -144,13 +148,20 @@ func (a *App) shutdown() error {
 	// 3. Close the queue so workers drain and flush their final batches.
 	a.q.Close()
 
-	// 4. Wait for the workers, bounded by SHUTDOWN_TIMEOUT.
+	// 4. Wait for the workers, bounded by SHUTDOWN_TIMEOUT. Failed batches are
+	// retried with backoff inside that budget; anything still unwritten when it
+	// runs out is abandoned and reported here, which makes the process exit
+	// non-zero rather than silently losing accepted records.
 	if waitErr := a.wp.Wait(ctx); waitErr != nil {
 		a.log.Error("worker pool did not drain in time", "err", waitErr, "queue_depth", a.q.Len())
 		if err == nil {
 			err = fmt.Errorf("drain ingest queue: %w", waitErr)
 		}
 	}
+	if lost := a.wp.Lost(); lost > 0 {
+		a.log.Error("accepted records lost at shutdown", "lost", lost)
+	}
+	a.wp.Close()
 
 	// 5. Release the database pool.
 	a.pool.Close()
