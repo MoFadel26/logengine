@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// defaultPreShutdownDelay matches the preStop sleep in the Kubernetes
-// manifests, and is spent inside SHUTDOWN_TIMEOUT rather than on top of it.
-const defaultPreShutdownDelay = 5 * time.Second
-
 // Config holds the runtime configuration of the API service.
 type Config struct {
 	DatabaseURL     string
@@ -19,20 +15,13 @@ type Config struct {
 	QueueSize       int
 	ShutdownTimeout time.Duration
 	Addr            string
-
-	// PreShutdownDelay is how long the server keeps serving after SIGTERM,
-	// with readiness already failing, so in-flight and newly routed requests
-	// complete while endpoints deregister. Deliberately not an env var: the
-	// env contract is fixed. Tests set it to zero.
-	PreShutdownDelay time.Duration
 }
 
 // Load reads the configuration from the environment and validates it.
 func Load() (Config, error) {
 	cfg := Config{
-		DatabaseURL:      os.Getenv("DATABASE_URL"),
-		Addr:             ":8080",
-		PreShutdownDelay: defaultPreShutdownDelay,
+		DatabaseURL: os.Getenv("DATABASE_URL"),
+		Addr:        ":8080",
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
