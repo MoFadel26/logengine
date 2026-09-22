@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: logengine-local
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+images:
+  - name: logengine-api
+    newTag: dev
+
+patches:
+  - path: patch-deployment.yaml
+    target:
+      kind: Deployment
+      name: logengine-api
+  - path: patch-hpa.yaml
+    target:
+      kind: HorizontalPodAutoscaler
+      name: logengine-api
