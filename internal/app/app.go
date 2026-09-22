@@ -95,8 +95,9 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, error)
 func (a *App) Addr() string { return a.ln.Addr().String() }
 
 // Run serves until ctx is cancelled, then shuts down gracefully in this order:
-// readiness fails, HTTP server drains, ingest queue closes, workers flush what
-// is left (bounded by SHUTDOWN_TIMEOUT), database pool closes.
+// readiness fails and keep-alives stop, the server keeps serving for
+// PreShutdownDelay, the HTTP server drains, the ingest queue closes, workers
+// flush what is left (bounded by SHUTDOWN_TIMEOUT), the database pool closes.
 func (a *App) Run(ctx context.Context) error {
 	a.wp.Start()
 	a.api.SetReady(true)
@@ -133,10 +134,29 @@ func (a *App) shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.ShutdownTimeout)
 	defer cancel()
 
-	// 1. Fail readiness so load balancers stop sending new traffic.
+	// 1. Fail readiness so load balancers stop sending new traffic, and stop
+	// advertising keep-alive so clients close idle connections and open fresh
+	// ones elsewhere. Without this, a client can write a request onto a
+	// pooled connection at the same moment Shutdown closes it as idle, which
+	// surfaces as an EOF with no HTTP response.
 	a.api.SetReady(false)
+	a.srv.SetKeepAlivesEnabled(false)
 
-	// 2. Stop accepting requests and let in-flight handlers finish. Once this
+	// 2. Keep serving briefly. Readiness is already failing, so this window is
+	// spent letting in-flight requests finish and letting endpoint removal
+	// propagate to kube-proxy before any connection is torn down. It is inside
+	// the SHUTDOWN_TIMEOUT budget, not added to it.
+	if a.cfg.PreShutdownDelay > 0 {
+		a.log.Info("draining connections before shutdown", "delay", a.cfg.PreShutdownDelay)
+		timer := time.NewTimer(a.cfg.PreShutdownDelay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+		}
+	}
+
+	// 3. Stop accepting requests and let in-flight handlers finish. Once this
 	// returns, no handler can still be enqueuing, which makes closing the
 	// queue safe.
 	var err error
@@ -145,10 +165,10 @@ func (a *App) shutdown() error {
 		a.log.Error("http shutdown did not complete", "err", shutErr)
 	}
 
-	// 3. Close the queue so workers drain and flush their final batches.
+	// 4. Close the queue so workers drain and flush their final batches.
 	a.q.Close()
 
-	// 4. Wait for the workers, bounded by SHUTDOWN_TIMEOUT. Failed batches are
+	// 5. Wait for the workers, bounded by SHUTDOWN_TIMEOUT. Failed batches are
 	// retried with backoff inside that budget; anything still unwritten when it
 	// runs out is abandoned and reported here, which makes the process exit
 	// non-zero rather than silently losing accepted records.
@@ -163,7 +183,7 @@ func (a *App) shutdown() error {
 	}
 	a.wp.Close()
 
-	// 5. Release the database pool.
+	// 6. Release the database pool.
 	a.pool.Close()
 	a.log.Info("shutdown complete")
 	return err
