@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logengine-api-config
+  labels:
+    app: logengine-api
+data:
+  WORKER_COUNT: "8"
+  QUEUE_SIZE: "10000"
+  SHUTDOWN_TIMEOUT: "25s"
