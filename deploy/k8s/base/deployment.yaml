@@ -27,8 +27,10 @@ spec:
     spec:
       # terminationGracePeriodSeconds must exceed preStop sleep +
       # SHUTDOWN_TIMEOUT (5s + 25s = 30s) or the kubelet SIGKILLs the
-      # process before it finishes draining in-flight work.
-      terminationGracePeriodSeconds: 30
+      # process before it finishes draining in-flight work. 40s leaves 10s
+      # of headroom over that bound; at exactly 30s it merely met the bound,
+      # so a slow final flush could be killed mid-write.
+      terminationGracePeriodSeconds: 40
       containers:
         - name: api
           image: logengine-api:latest
