@@ -59,7 +59,8 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, error)
 	q := queue.New(cfg.QueueSize)
 	m.RegisterQueueDepth(q.Len)
 
-	wp := worker.New(q.C(), pgstore.New(pool), worker.Config{
+	store := pgstore.New(pool)
+	wp := worker.New(q.C(), store, worker.Config{
 		Workers:       cfg.WorkerCount,
 		BatchSize:     batchSize,
 		FlushInterval: flushInterval,
@@ -68,7 +69,7 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, error)
 		RetryMax:      retryMax,
 	}, m, log)
 
-	api := httpapi.New(q, m, reg, log)
+	api := httpapi.New(q, m, reg, log, store)
 
 	ln, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {

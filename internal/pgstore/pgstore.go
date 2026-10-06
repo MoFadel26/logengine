@@ -1,10 +1,14 @@
-// Package pgstore writes batches of log records to Postgres with COPY.
+// Package pgstore writes batches of log records to Postgres with COPY
+// and queries records against the partitioned logs table.
 package pgstore
 
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -15,13 +19,27 @@ import (
 // not be supplied.
 var columns = []string{"tenant_id", "ts", "level", "source", "message", "attrs"}
 
-// Writer persists log records into the partitioned logs table.
+// Writer persists and queries log records against the partitioned logs table.
 type Writer struct {
 	pool *pgxpool.Pool
 }
 
+// Store is an alias for Writer.
+type Store = Writer
+
 // New wraps a pgx pool.
 func New(pool *pgxpool.Pool) *Writer { return &Writer{pool: pool} }
+
+// QueryParams configures filters for searching logs.
+type QueryParams struct {
+	TenantID *uuid.UUID
+	Level    string
+	Source   string
+	Search   string
+	From     time.Time
+	To       time.Time
+	Limit    int
+}
 
 // WriteBatch COPYs recs into logs.
 func (w *Writer) WriteBatch(ctx context.Context, recs []logrec.Record) error {
@@ -42,4 +60,77 @@ func (w *Writer) WriteBatch(ctx context.Context, recs []logrec.Record) error {
 		return fmt.Errorf("copy into logs wrote %d of %d rows", n, len(recs))
 	}
 	return nil
+}
+
+// Query searches logs matching the given parameters.
+func (w *Writer) Query(ctx context.Context, p QueryParams) ([]logrec.Record, error) {
+	var (
+		clauses []string
+		args    []any
+	)
+
+	if p.TenantID != nil {
+		args = append(args, *p.TenantID)
+		clauses = append(clauses, fmt.Sprintf("tenant_id = $%d", len(args)))
+	}
+	if p.Level != "" {
+		args = append(args, strings.ToUpper(p.Level))
+		clauses = append(clauses, fmt.Sprintf("level = $%d", len(args)))
+	}
+	if p.Source != "" {
+		args = append(args, p.Source)
+		clauses = append(clauses, fmt.Sprintf("source = $%d", len(args)))
+	}
+	if p.Search != "" {
+		args = append(args, "%"+p.Search+"%")
+		clauses = append(clauses, fmt.Sprintf("message ILIKE $%d", len(args)))
+	}
+	if !p.From.IsZero() {
+		args = append(args, p.From)
+		clauses = append(clauses, fmt.Sprintf("ts >= $%d", len(args)))
+	}
+	if !p.To.IsZero() {
+		args = append(args, p.To)
+		clauses = append(clauses, fmt.Sprintf("ts <= $%d", len(args)))
+	}
+
+	query := "SELECT tenant_id, ts, coalesce(level, ''), coalesce(source, ''), coalesce(message, ''), attrs FROM logs"
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	query += " ORDER BY ts DESC"
+
+	limit := p.Limit
+	if limit <= 0 {
+		limit = 100
+	} else if limit > 1000 {
+		limit = 1000
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(" LIMIT $%d", len(args))
+
+	rows, err := w.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query logs: %w", err)
+	}
+	defer rows.Close()
+
+	var records []logrec.Record
+	for rows.Next() {
+		var (
+			rec   logrec.Record
+			attrs *[]byte
+		)
+		if err := rows.Scan(&rec.TenantID, &rec.TS, &rec.Level, &rec.Source, &rec.Message, &attrs); err != nil {
+			return nil, fmt.Errorf("scan log row: %w", err)
+		}
+		if attrs != nil {
+			rec.Attrs = *attrs
+		}
+		records = append(records, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate log rows: %w", err)
+	}
+	return records, nil
 }

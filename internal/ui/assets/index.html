@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>logengine — Real-Time Log Analytics</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    /* Linear Design System Tokens from DESIGN.md */
+    :root {
+      --canvas: #010102;
+      --surface-1: #0f1011;
+      --surface-2: #141516;
+      --surface-3: #18191a;
+      --surface-4: #191a1b;
+
+      --hairline: #23252a;
+      --hairline-strong: #34343a;
+      --hairline-tertiary: #3e3e44;
+
+      --ink: #f7f8f8;
+      --ink-muted: #d0d6e0;
+      --ink-subtle: #8a8f98;
+      --ink-tertiary: #62666d;
+
+      --primary: #5e6ad2;
+      --primary-hover: #828fff;
+      --primary-focus: #5e69d1;
+      --on-primary: #ffffff;
+
+      --semantic-success: #27a644;
+      --semantic-overlay: rgba(0, 0, 0, 0.85);
+
+      /* In-Product Severity Accents */
+      --level-debug-color: #8a8f98;
+      --level-debug-bg: rgba(138, 143, 152, 0.12);
+      --level-info-color: #5e6ad2;
+      --level-info-bg: rgba(94, 105, 210, 0.14);
+      --level-warn-color: #f2994a;
+      --level-warn-bg: rgba(242, 153, 74, 0.14);
+      --level-error-color: #eb5757;
+      --level-error-bg: rgba(235, 87, 87, 0.15);
+      --level-fatal-color: #ff4d4f;
+      --level-fatal-bg: rgba(255, 77, 79, 0.22);
+
+      --font-sans: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, Monaco, monospace;
+
+      --radius-xs: 4px;
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+      --radius-pill: 9999px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      background-color: var(--canvas);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      letter-spacing: -0.01em;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top Navigation (height: 56px, background: canvas, hairline bottom) */
+    header {
+      background: var(--canvas);
+      border-bottom: 1px solid var(--hairline);
+      height: 56px;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 40;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--ink);
+    }
+
+    /* Linear style polygon glyph */
+    .brand-mark {
+      width: 22px;
+      height: 22px;
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .brand-title {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-version {
+      font-size: 11px;
+      font-weight: 500;
+      padding: 1px 6px;
+      border-radius: var(--radius-xs);
+      background: var(--surface-2);
+      border: 1px solid var(--hairline);
+      color: var(--ink-subtle);
+      letter-spacing: 0;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* Linear Status Badge */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface-2);
+      border: 1px solid var(--hairline);
+      color: var(--ink-muted);
+      padding: 3px 10px;
+      border-radius: var(--radius-pill);
+      font-size: 12px;
+      font-weight: 400;
+      letter-spacing: 0;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--semantic-success);
+    }
+
+    .status-badge.down {
+      color: var(--level-error-color);
+      border-color: rgba(235, 87, 87, 0.3);
+    }
+
+    .status-badge.down .status-dot {
+      background: var(--level-error-color);
+    }
+
+    /* Buttons (button-primary, button-secondary) */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: var(--radius-md);
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1.2;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.12s ease;
+      text-decoration: none;
+      white-space: nowrap;
+      font-family: inherit;
+    }
+
+    .btn:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(94, 105, 209, 0.4);
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: var(--on-primary);
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-hover);
+    }
+
+    .btn-primary:active {
+      background: var(--primary-focus);
+    }
+
+    .btn-secondary {
+      background: var(--surface-1);
+      color: var(--ink);
+      border: 1px solid var(--hairline);
+    }
+
+    .btn-secondary:hover {
+      background: var(--surface-2);
+      border-color: var(--hairline-strong);
+    }
+
+    .btn-tertiary {
+      background: var(--canvas);
+      color: var(--ink-subtle);
+      border: 1px solid var(--hairline);
+    }
+
+    .btn-tertiary:hover {
+      color: var(--ink);
+      background: var(--surface-1);
+      border-color: var(--hairline-strong);
+    }
+
+    .btn-sm {
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: var(--radius-md);
+    }
+
+    .kbd-shortcut {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      background: var(--surface-3);
+      border: 1px solid var(--hairline-strong);
+      color: var(--ink-subtle);
+      padding: 1px 4px;
+      border-radius: 3px;
+      margin-left: 4px;
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      padding: 24px 32px;
+      max-width: 1440px;
+      margin: 0 auto;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* Cards (surface-1, 1px hairline border, rounded.lg 12px) */
+    .card {
+      background: var(--surface-1);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-lg);
+      padding: 20px 24px;
+    }
+
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 16px;
+      align-items: end;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-group label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--ink-subtle);
+      display: flex;
+      justify-content: space-between;
+      letter-spacing: 0.1px;
+    }
+
+    .form-group label .hint-action {
+      color: var(--primary);
+      cursor: pointer;
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+
+    .form-group label .hint-action:hover {
+      color: var(--primary-hover);
+    }
+
+    /* Inputs (text-input in DESIGN.md: surface-1, 8px 12px, rounded.md 8px) */
+    .form-control {
+      background: var(--surface-2);
+      border: 1px solid var(--hairline);
+      color: var(--ink);
+      border-radius: var(--radius-md);
+      padding: 8px 12px;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
+      font-family: inherit;
+      width: 100%;
+    }
+
+    .form-control:focus {
+      border-color: var(--hairline-strong);
+      box-shadow: 0 0 0 2px rgba(94, 105, 209, 0.4);
+    }
+
+    .form-control::placeholder {
+      color: var(--ink-tertiary);
+    }
+
+    select.form-control {
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8f98' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 28px;
+    }
+
+    .filter-bottom-bar {
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--hairline);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .filter-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .tail-toggle {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--ink-subtle);
+      font-size: 13px;
+    }
+
+    .tail-pulse {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--semantic-success);
+      box-shadow: 0 0 0 0 rgba(39, 166, 68, 0.7);
+      animation: pulse 1.6s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(39, 166, 68, 0.7); }
+      70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(39, 166, 68, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(39, 166, 68, 0); }
+    }
+
+    /* Stream metadata strip */
+    .stream-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 4px;
+      font-size: 13px;
+      color: var(--ink-subtle);
+    }
+
+    .stream-count {
+      font-weight: 500;
+      color: var(--ink);
+    }
+
+    /* Logs Container (product-screenshot-card framing in DESIGN.md: surface-1, 12px radius, hairline border) */
+    .logs-container {
+      background: var(--surface-1);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .table-header {
+      display: grid;
+      grid-template-columns: 210px 88px 130px 1fr 70px;
+      padding: 10px 18px;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--hairline);
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--ink-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .log-item {
+      border-bottom: 1px solid var(--hairline);
+      transition: background 0.1s ease;
+      cursor: pointer;
+    }
+
+    .log-item:last-child {
+      border-bottom: none;
+    }
+
+    .log-item:hover {
+      background: var(--surface-2);
+    }
+
+    .log-row {
+      display: grid;
+      grid-template-columns: 210px 88px 130px 1fr 70px;
+      padding: 9px 18px;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      gap: 10px;
+    }
+
+    .col-time {
+      color: var(--ink-subtle);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .col-level {
+      display: flex;
+      align-items: center;
+    }
+
+    /* Linear-style level badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: var(--radius-xs);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      line-height: 1.2;
+    }
+
+    .badge-info {
+      color: var(--level-info-color);
+      background: var(--level-info-bg);
+      border: 1px solid rgba(94, 105, 210, 0.2);
+    }
+
+    .badge-warn {
+      color: var(--level-warn-color);
+      background: var(--level-warn-bg);
+      border: 1px solid rgba(242, 153, 74, 0.2);
+    }
+
+    .badge-error {
+      color: var(--level-error-color);
+      background: var(--level-error-bg);
+      border: 1px solid rgba(235, 87, 87, 0.25);
+    }
+
+    .badge-debug {
+      color: var(--level-debug-color);
+      background: var(--level-debug-bg);
+      border: 1px solid rgba(138, 143, 152, 0.2);
+    }
+
+    .badge-fatal {
+      color: var(--level-fatal-color);
+      background: var(--level-fatal-bg);
+      border: 1px solid rgba(255, 77, 79, 0.3);
+    }
+
+    .col-source {
+      color: var(--ink-muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+    }
+
+    .source-tag {
+      background: var(--surface-3);
+      border: 1px solid var(--hairline);
+      padding: 1px 6px;
+      border-radius: var(--radius-xs);
+      color: var(--ink-muted);
+      font-size: 11px;
+    }
+
+    .col-msg {
+      color: var(--ink);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--font-sans);
+      font-size: 13px;
+    }
+
+    .col-action {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      color: var(--ink-tertiary);
+    }
+
+    .chevron {
+      display: inline-block;
+      transition: transform 0.15s ease;
+      font-size: 12px;
+      color: var(--ink-subtle);
+    }
+
+    .log-item.open .chevron {
+      transform: rotate(90deg);
+      color: var(--ink);
+    }
+
+    /* Expanded Details (canvas surface with dashed hairline divider) */
+    .log-details {
+      display: none;
+      padding: 16px 20px;
+      background: var(--canvas);
+      border-top: 1px dashed var(--hairline-strong);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .log-item.open .log-details {
+      display: block;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 8px 16px;
+      margin-bottom: 14px;
+    }
+
+    .detail-label {
+      color: var(--ink-subtle);
+      font-weight: 500;
+    }
+
+    .detail-value {
+      color: var(--ink);
+      word-break: break-all;
+    }
+
+    .json-box {
+      background: var(--surface-2);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      overflow-x: auto;
+      color: #9cb3ff;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+
+    /* State box */
+    .state-box {
+      padding: 64px 24px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      color: var(--ink-subtle);
+    }
+
+    .state-box h3 {
+      font-size: 15px;
+      color: var(--ink);
+      font-weight: 600;
+      letter-spacing: -0.2px;
+    }
+
+    .spinner {
+      width: 22px;
+      height: 22px;
+      border: 2px solid var(--hairline-strong);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Modal Overlay (DESIGN.md: semantic-overlay rgba(0,0,0,0.85), surface-1 container, hairline-strong border) */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: var(--semantic-overlay);
+      backdrop-filter: blur(4px);
+      z-index: 50;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal-content {
+      background: var(--surface-1);
+      border: 1px solid var(--hairline-strong);
+      border-radius: var(--radius-xl);
+      width: 100%;
+      max-width: 580px;
+      box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.8);
+      overflow: hidden;
+    }
+
+    .modal-header {
+      padding: 16px 22px;
+      border-bottom: 1px solid var(--hairline);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .modal-header h3 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--ink);
+      letter-spacing: -0.3px;
+    }
+
+    .modal-body {
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .modal-footer {
+      padding: 14px 22px;
+      border-top: 1px solid var(--hairline);
+      background: var(--surface-2);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    /* Toast Notifications */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 60;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .toast {
+      background: var(--surface-2);
+      border: 1px solid var(--hairline-strong);
+      color: var(--ink);
+      padding: 10px 16px;
+      border-radius: var(--radius-md);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      font-size: 13px;
+      animation: fadeIn 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 768px) {
+      main { padding: 16px; }
+      .table-header { display: none; }
+      .log-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header>
+    <a href="/ui/" class="brand">
+      <div class="brand-mark">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="4 17 10 11 4 5"></polyline>
+          <line x1="12" y1="19" x2="20" y2="19"></line>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-title">
+          logengine
+          <span class="brand-version">v1.0</span>
+        </div>
+      </div>
+    </a>
+
+    <div class="header-actions">
+      <div id="serviceStatus" class="status-badge">
+        <span class="status-dot"></span>
+        <span id="statusText">Checking...</span>
+      </div>
+      <a href="/metrics" target="_blank" class="btn btn-tertiary btn-sm" title="View Prometheus Metrics">
+        Metrics ↗
+      </a>
+      <button id="openIngestModalBtn" class="btn btn-primary btn-sm">
+        + Send Test Log
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Filter Card -->
+    <div class="card">
+      <div class="filter-grid">
+        <div class="form-group">
+          <label>
+            Tenant ID
+            <span class="hint-action" id="fillExampleTenant">use demo</span>
+          </label>
+          <input
+            id="filterTenant"
+            type="text"
+            class="form-control"
+            placeholder="00000000-0000-0000-0000-000000000001"
+            spellcheck="false"
+          />
+        </div>
+
+        <div class="form-group">
+          <label>Severity Level</label>
+          <select id="filterLevel" class="form-control">
+            <option value="">All Levels</option>
+            <option value="DEBUG">DEBUG</option>
+            <option value="INFO">INFO</option>
+            <option value="WARN">WARN</option>
+            <option value="ERROR">ERROR</option>
+            <option value="FATAL">FATAL</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Source</label>
+          <input id="filterSource" type="text" class="form-control" placeholder="e.g. svc-api, worker" />
+        </div>
+
+        <div class="form-group">
+          <label>Message Search</label>
+          <input id="filterSearch" type="text" class="form-control" placeholder="Search substring in message..." />
+        </div>
+
+        <div class="form-group">
+          <label>Time Range</label>
+          <select id="filterTimeRange" class="form-control">
+            <option value="15m">Last 15 minutes</option>
+            <option value="1h">Last 1 hour</option>
+            <option value="24h">Last 24 hours</option>
+            <option value="7d" selected>Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="all">All time</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Max Records</label>
+          <select id="filterLimit" class="form-control">
+            <option value="50">50 records</option>
+            <option value="100" selected>100 records</option>
+            <option value="250">250 records</option>
+            <option value="500">500 records</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="filter-bottom-bar">
+        <div class="filter-actions">
+          <button id="searchBtn" class="btn btn-primary">
+            Search Logs
+          </button>
+          <button id="resetBtn" class="btn btn-secondary">
+            Reset Filters
+          </button>
+        </div>
+
+        <div class="tail-toggle">
+          <span id="tailIndicator" style="display: none;" class="tail-pulse"></span>
+          <label for="tailInterval">Auto-refresh:</label>
+          <select id="tailInterval" class="form-control" style="width: auto; padding: 5px 10px;">
+            <option value="0">Paused</option>
+            <option value="3000">Every 3s</option>
+            <option value="5000">Every 5s</option>
+            <option value="10000">Every 10s</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stream metadata strip -->
+    <div class="stream-header">
+      <div>
+        Showing <span id="logCount" class="stream-count">0</span> logs
+        <span id="queryDuration" style="font-size: 11px; margin-left: 6px; color: var(--ink-tertiary);"></span>
+      </div>
+      <div id="timestampInfo" style="font-size: 11px; color: var(--ink-tertiary);">
+        Press <span class="kbd-shortcut">↵</span> in filters to search
+      </div>
+    </div>
+
+    <!-- Logs Container -->
+    <div class="logs-container">
+      <div class="table-header">
+        <div>Timestamp (UTC)</div>
+        <div>Level</div>
+        <div>Source</div>
+        <div>Message</div>
+        <div style="text-align: right;">Attrs</div>
+      </div>
+
+      <div id="logsList">
+        <div class="state-box">
+          <div class="spinner"></div>
+          <div>Loading logs...</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Ingest Modal -->
+  <div id="ingestModal" class="modal-backdrop">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Send Test Log Record</h3>
+        <button id="closeIngestModalBtn" class="btn btn-tertiary btn-sm" style="border:none; font-size:16px;">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 12px; color: var(--ink-subtle);">
+          Submit an event directly to <code>POST /v1/logs</code>. It will be buffered in the ingest queue and written in the next worker batch.
+        </p>
+
+        <div class="form-group">
+          <label>Payload (JSON Object or Array)</label>
+          <textarea
+            id="ingestPayload"
+            rows="10"
+            class="form-control"
+            style="font-family: var(--font-mono); font-size: 12px; background: var(--canvas);"
+          ></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="resetPayloadBtn" class="btn btn-secondary btn-sm">Load Default</button>
+        <button id="submitIngestBtn" class="btn btn-primary btn-sm">Submit to Ingest API</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script>
+    const DEMO_TENANT = "00000000-0000-0000-0000-000000000001";
+    let autoRefreshTimer = null;
+
+    // Elements
+    const filterTenant = document.getElementById("filterTenant");
+    const filterLevel = document.getElementById("filterLevel");
+    const filterSource = document.getElementById("filterSource");
+    const filterSearch = document.getElementById("filterSearch");
+    const filterTimeRange = document.getElementById("filterTimeRange");
+    const filterLimit = document.getElementById("filterLimit");
+    const searchBtn = document.getElementById("searchBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const tailInterval = document.getElementById("tailInterval");
+    const tailIndicator = document.getElementById("tailIndicator");
+    const logsList = document.getElementById("logsList");
+    const logCount = document.getElementById("logCount");
+    const queryDuration = document.getElementById("queryDuration");
+    const fillExampleTenant = document.getElementById("fillExampleTenant");
+    const serviceStatus = document.getElementById("serviceStatus");
+    const statusText = document.getElementById("statusText");
+
+    // Modal elements
+    const ingestModal = document.getElementById("ingestModal");
+    const openIngestModalBtn = document.getElementById("openIngestModalBtn");
+    const closeIngestModalBtn = document.getElementById("closeIngestModalBtn");
+    const ingestPayload = document.getElementById("ingestPayload");
+    const resetPayloadBtn = document.getElementById("resetPayloadBtn");
+    const submitIngestBtn = document.getElementById("submitIngestBtn");
+
+    function getDefaultPayload() {
+      return JSON.stringify({
+        tenant_id: filterTenant.value.trim() || DEMO_TENANT,
+        ts: new Date().toISOString(),
+        level: "INFO",
+        source: "dashboard-tester",
+        message: "User initiated action from web UI",
+        attrs: {
+          browser: navigator.userAgent.slice(0, 40),
+          action: "test_event",
+          timestamp_ms: Date.now()
+        }
+      }, null, 2);
+    }
+
+    fillExampleTenant.addEventListener("click", () => {
+      filterTenant.value = DEMO_TENANT;
+      fetchLogs();
+    });
+
+    // Check service health
+    async function checkHealth() {
+      try {
+        const res = await fetch("/readyz");
+        if (res.ok) {
+          serviceStatus.className = "status-badge";
+          statusText.textContent = "Operational";
+        } else {
+          serviceStatus.className = "status-badge down";
+          statusText.textContent = "Shutting Down";
+        }
+      } catch (e) {
+        serviceStatus.className = "status-badge down";
+        statusText.textContent = "Offline";
+      }
+    }
+
+    // Toast helper
+    function showToast(msg, isError = false) {
+      const container = document.getElementById("toastContainer");
+      const toast = document.createElement("div");
+      toast.className = "toast";
+      if (isError) toast.style.borderColor = "var(--level-error-color)";
+      toast.innerHTML = (isError ? "✕ " : "✓ ") + escapeHtml(msg);
+      container.appendChild(toast);
+      setTimeout(() => toast.remove(), 4000);
+    }
+
+    // Escape HTML
+    function escapeHtml(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function formatTime(isoStr) {
+      try {
+        const d = new Date(isoStr);
+        return d.toISOString().replace("T", " ").replace("Z", "");
+      } catch {
+        return isoStr;
+      }
+    }
+
+    function getLevelBadge(level) {
+      const l = (level || "INFO").toUpperCase();
+      let cls = "badge-info";
+      if (l === "ERROR") cls = "badge-error";
+      else if (l === "WARN") cls = "badge-warn";
+      else if (l === "DEBUG") cls = "badge-debug";
+      else if (l === "FATAL") cls = "badge-fatal";
+      return `<span class="badge ${cls}">${escapeHtml(l)}</span>`;
+    }
+
+    async function fetchLogs() {
+      const startTime = performance.now();
+      const params = new URLSearchParams();
+
+      const tenant = filterTenant.value.trim();
+      if (tenant) params.set("tenant_id", tenant);
+
+      const level = filterLevel.value;
+      if (level) params.set("level", level);
+
+      const source = filterSource.value.trim();
+      if (source) params.set("source", source);
+
+      const search = filterSearch.value.trim();
+      if (search) params.set("q", search);
+
+      const range = filterTimeRange.value;
+      if (range && range !== "all") {
+        params.set("from", range);
+      }
+
+      const limit = filterLimit.value;
+      if (limit) params.set("limit", limit);
+
+      try {
+        const res = await fetch("/v1/logs?" + params.toString());
+        const elapsed = (performance.now() - startTime).toFixed(1);
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          logsList.innerHTML = `
+            <div class="state-box">
+              <h3>Error loading logs</h3>
+              <p style="color: var(--level-error-color); font-size: 13px;">${escapeHtml(errData.error || res.statusText)}</p>
+            </div>
+          `;
+          logCount.textContent = "0";
+          queryDuration.textContent = `(${elapsed}ms)`;
+          return;
+        }
+
+        const data = await res.json();
+        const logs = data.logs || [];
+        logCount.textContent = logs.length;
+        queryDuration.textContent = `(${elapsed}ms)`;
+
+        if (logs.length === 0) {
+          logsList.innerHTML = `
+            <div class="state-box">
+              <h3>No matching logs found</h3>
+              <p style="font-size: 13px;">Try widening your time window or removing filters.</p>
+              <button class="btn btn-secondary btn-sm" onclick="document.getElementById('openIngestModalBtn').click()">
+                Send a sample log now
+              </button>
+            </div>
+          `;
+          return;
+        }
+
+        logsList.innerHTML = logs.map((log, idx) => {
+          let attrsCount = 0;
+          let attrsPretty = "null";
+          if (log.attrs) {
+            attrsCount = Object.keys(log.attrs).length;
+            attrsPretty = escapeHtml(JSON.stringify(log.attrs, null, 2));
+          }
+
+          const sourceContent = log.source
+            ? `<span class="source-tag">${escapeHtml(log.source)}</span>`
+            : `<span style="color: var(--ink-tertiary);">-</span>`;
+
+          return `
+            <div class="log-item" onclick="toggleDetails(${idx})">
+              <div class="log-row">
+                <div class="col-time" title="${escapeHtml(log.ts)}">${escapeHtml(formatTime(log.ts))}</div>
+                <div class="col-level">${getLevelBadge(log.level)}</div>
+                <div class="col-source" title="${escapeHtml(log.source)}">${sourceContent}</div>
+                <div class="col-msg" title="${escapeHtml(log.message)}">${escapeHtml(log.message || "")}</div>
+                <div class="col-action">
+                  <span style="font-size: 11px; margin-right: 6px; color: var(--ink-tertiary); font-family: var(--font-mono);">${attrsCount > 0 ? attrsCount + ' attrs' : ''}</span>
+                  <span class="chevron" id="chev-${idx}">▸</span>
+                </div>
+              </div>
+              <div class="log-details" id="detail-${idx}">
+                <div class="detail-grid">
+                  <div class="detail-label">Tenant ID:</div>
+                  <div class="detail-value">${escapeHtml(log.tenant_id)}</div>
+
+                  <div class="detail-label">Exact Timestamp:</div>
+                  <div class="detail-value">${escapeHtml(log.ts)}</div>
+
+                  <div class="detail-label">Source:</div>
+                  <div class="detail-value">${escapeHtml(log.source || "(none)")}</div>
+
+                  <div class="detail-label">Full Message:</div>
+                  <div class="detail-value">${escapeHtml(log.message || "(empty)")}</div>
+                </div>
+
+                <div style="margin-top: 10px;">
+                  <div style="font-weight: 500; color: var(--ink-subtle); margin-bottom: 6px; font-size: 11px;">JSON Attributes:</div>
+                  <div class="json-box">${attrsPretty}</div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join("");
+
+      } catch (err) {
+        logsList.innerHTML = `
+          <div class="state-box">
+            <h3>Network Error</h3>
+            <p style="font-size: 13px;">${escapeHtml(err.message)}</p>
+          </div>
+        `;
+      }
+    }
+
+    window.toggleDetails = function(idx) {
+      const item = document.querySelectorAll(".log-item")[idx];
+      if (item) {
+        item.classList.toggle("open");
+      }
+    };
+
+    // Auto-refresh control
+    function setupAutoRefresh() {
+      if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+      const intervalMs = parseInt(tailInterval.value, 10);
+      if (intervalMs > 0) {
+        tailIndicator.style.display = "inline-block";
+        autoRefreshTimer = setInterval(fetchLogs, intervalMs);
+      } else {
+        tailIndicator.style.display = "none";
+      }
+    }
+
+    tailInterval.addEventListener("change", setupAutoRefresh);
+
+    // Search events
+    searchBtn.addEventListener("click", fetchLogs);
+    resetBtn.addEventListener("click", () => {
+      filterTenant.value = "";
+      filterLevel.value = "";
+      filterSource.value = "";
+      filterSearch.value = "";
+      filterTimeRange.value = "7d";
+      filterLimit.value = "100";
+      fetchLogs();
+    });
+
+    [filterTenant, filterSource, filterSearch].forEach(input => {
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") fetchLogs();
+      });
+    });
+
+    // Ingest Modal handlers
+    openIngestModalBtn.addEventListener("click", () => {
+      ingestPayload.value = getDefaultPayload();
+      ingestModal.classList.add("open");
+    });
+
+    closeIngestModalBtn.addEventListener("click", () => {
+      ingestModal.classList.remove("open");
+    });
+
+    resetPayloadBtn.addEventListener("click", () => {
+      ingestPayload.value = getDefaultPayload();
+    });
+
+    submitIngestBtn.addEventListener("click", async () => {
+      let bodyText = ingestPayload.value.trim();
+      try {
+        JSON.parse(bodyText); // Validate JSON format
+      } catch (e) {
+        showToast("Invalid JSON: " + e.message, true);
+        return;
+      }
+
+      submitIngestBtn.disabled = true;
+      submitIngestBtn.textContent = "Sending...";
+
+      try {
+        const res = await fetch("/v1/logs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: bodyText,
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (res.ok || res.status === 202) {
+          showToast(`Ingested ${data.accepted || 1} record(s)!`);
+          ingestModal.classList.remove("open");
+          setTimeout(fetchLogs, 650);
+        } else {
+          showToast(`Ingest failed (${res.status}): ${data.error || "Unknown error"}`, true);
+        }
+      } catch (err) {
+        showToast("Request failed: " + err.message, true);
+      } finally {
+        submitIngestBtn.disabled = false;
+        submitIngestBtn.textContent = "Submit to Ingest API";
+      }
+    });
+
+    // Initial load
+    checkHealth();
+    setInterval(checkHealth, 15000);
+    fetchLogs();
+  </script>
+</body>
+</html>

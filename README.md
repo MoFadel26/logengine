@@ -34,7 +34,7 @@ exits non-zero — losing records is never a silent, zero-exit outcome.
 | Path | Contents |
 |---|---|
 | `cmd/api/` | Service entrypoint |
-| `internal/` | Handler, queue, worker pool, pgx store, config, metrics |
+| `internal/` | Handler, queue, worker pool, pgx store, config, metrics, embedded UI |
 | `db/migrations/` | golang-migrate up/down pairs |
 | `db/seed/` | Synthetic data generator |
 | `db/queries.sql` | Sample queries with observed `EXPLAIN ANALYZE` plans |
@@ -59,8 +59,7 @@ Then apply the schema and create partitions:
 
 ```bash
 kubectl -n logengine-local port-forward svc/postgres 55432:5432 &
-export DATABASE_URL='postgres://logengine:logengine@127.0.0.1:55432/logengine?sslmode=disable'
-migrate -path db/migrations -database "$DATABASE_URL" up
+export DATABASE_URL='postgres://logengine:logengine@127.0.0.1:55432/logengine?sslmode=disable'\nmigrate -path db/migrations -database "$DATABASE_URL" up
 psql "$DATABASE_URL" -c 'SELECT logs_create_partitions_between(CURRENT_DATE - 2, CURRENT_DATE + 2);'
 ```
 
@@ -84,17 +83,43 @@ the defaults):
 DATABASE_URL="$DATABASE_URL" ./db/seed/seed.sh
 ```
 
-## API
+## API & Web UI
 
 The service listens on `:8080`. In Kubernetes the Service fronts it on port
 `80`, so in-cluster callers use `http://logengine-api/v1/logs`.
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /` or `GET /ui/` | Embedded web analytics UI dashboard |
+| `GET /v1/logs` | Query and filter logs |
 | `POST /v1/logs` | Ingest one record or an array of them |
 | `GET /healthz` | Liveness |
 | `GET /readyz` | Readiness — `503` once shutdown begins |
 | `GET /metrics` | Prometheus exposition |
+
+### Web UI Dashboard
+
+Navigate to `http://localhost:8080/` (or `/ui/`) in any browser:
+- **Search & Filter:** Filter by `tenant_id`, severity `level` (`INFO`, `WARN`, `ERROR`), `source`, time ranges (`15m`, `1h`, `24h`, `7d`, `30d`), or message text search.
+- **Auto-Refresh / Live Tail:** Toggle 3s, 5s, or 10s polling for continuous inspection.
+- **Inspect Attributes:** Expand any log line to view JSON attributes and metadata.
+- **Interactive Tester:** Send test logs directly from the modal to verify ingestion and queue batching.
+
+### Query API
+
+`GET /v1/logs` accepts the following query parameters:
+- `tenant_id`: UUID (e.g. `00000000-0000-0000-0000-000000000001`)
+- `level`: Log level (`INFO`, `WARN`, `ERROR`, `DEBUG`)
+- `source`: Originating service name
+- `q`: Case-insensitive substring match on message
+- `from` / `to`: Relative duration (`15m`, `1h`, `24h`, `7d`) or RFC3339 timestamp
+- `limit`: Number of rows to return (default 100, max 1000)
+
+```bash
+curl "http://localhost:8080/v1/logs?level=ERROR&from=24h&limit=50"
+```
+
+### Ingest API
 
 A record is `tenant_id` (UUID) and `ts` (RFC3339Nano), both required, plus
 optional `level`, `source`, `message` and an `attrs` object:
@@ -152,8 +177,7 @@ is the right call at that selectivity and table size.
 Structured JSON logs via `log/slog`. Prometheus metrics on `/metrics`:
 
 | Metric | Meaning |
-|---|---|
-| `logengine_queue_depth` | Current queue occupancy |
+|---|---|\n| `logengine_queue_depth` | Current queue occupancy |
 | `logengine_logs_accepted_total` | Records queued |
 | `logengine_logs_dropped_total` | Records refused — queue full |
 | `logengine_logs_lost_total` | Accepted records abandoned unwritten |

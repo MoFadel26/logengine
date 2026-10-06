@@ -96,6 +96,54 @@ func TestWriteBatchRoundTrip(t *testing.T) {
 	}
 }
 
+func TestQueryLogs(t *testing.T) {
+	dsn := pgtest.Start(t)
+	pool := newPool(t, dsn)
+	w := pgstore.New(pool)
+
+	tenant := uuid.New()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	recs := []logrec.Record{
+		{TenantID: tenant, TS: now.Add(-2 * time.Minute), Level: "DEBUG", Source: "auth", Message: "user connecting"},
+		{TenantID: tenant, TS: now.Add(-1 * time.Minute), Level: "INFO", Source: "api", Message: "checkout successful", Attrs: []byte(`{"amount":100}`)},
+		{TenantID: tenant, TS: now, Level: "ERROR", Source: "api", Message: "payment gateway timeout"},
+	}
+
+	if err := w.WriteBatch(context.Background(), recs); err != nil {
+		t.Fatalf("WriteBatch: %v", err)
+	}
+
+	// 1. Query by tenant
+	res, err := w.Query(context.Background(), pgstore.QueryParams{TenantID: &tenant})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(res) != 3 {
+		t.Fatalf("got %d records, want 3", len(res))
+	}
+	if res[0].Message != "payment gateway timeout" {
+		t.Errorf("expected newest first, got %q", res[0].Message)
+	}
+
+	// 2. Query by level
+	resLevel, err := w.Query(context.Background(), pgstore.QueryParams{TenantID: &tenant, Level: "ERROR"})
+	if err != nil {
+		t.Fatalf("Query by level: %v", err)
+	}
+	if len(resLevel) != 1 || resLevel[0].Level != "ERROR" {
+		t.Fatalf("got %d records for ERROR, want 1", len(resLevel))
+	}
+
+	// 3. Query by message search
+	resSearch, err := w.Query(context.Background(), pgstore.QueryParams{TenantID: &tenant, Search: "checkout"})
+	if err != nil {
+		t.Fatalf("Query by search: %v", err)
+	}
+	if len(resSearch) != 1 || resSearch[0].Source != "api" {
+		t.Fatalf("got %d records for checkout search, want 1", len(resSearch))
+	}
+}
+
 func TestWriteBatchLarge(t *testing.T) {
 	dsn := pgtest.Start(t)
 	pool := newPool(t, dsn)

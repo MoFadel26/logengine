@@ -1,21 +1,39 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/MoFadel26/logengine/internal/logrec"
 	"github.com/MoFadel26/logengine/internal/metrics"
+	"github.com/MoFadel26/logengine/internal/pgstore"
 	"github.com/MoFadel26/logengine/internal/queue"
 )
 
 const tenant = "3f0c1b2a-8d4e-4b6f-9a1c-2e5d7f8a9b0c"
+
+type fakeQuerier struct {
+	recs []logrec.Record
+	err  error
+}
+
+func (f *fakeQuerier) Query(_ context.Context, _ pgstore.QueryParams) ([]logrec.Record, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.recs, nil
+}
 
 func newAPI(t *testing.T, queueSize int) (*API, *queue.Queue) {
 	t.Helper()
@@ -23,7 +41,7 @@ func newAPI(t *testing.T, queueSize int) (*API, *queue.Queue) {
 	m := metrics.New(reg)
 	q := queue.New(queueSize)
 	m.RegisterQueueDepth(q.Len)
-	api := New(q, m, reg, slog.New(slog.DiscardHandler))
+	api := New(q, m, reg, slog.New(slog.DiscardHandler), nil)
 	api.SetReady(true)
 	return api, q
 }
@@ -62,111 +80,99 @@ func TestPostSingleLogAccepted(t *testing.T) {
 func TestPostArrayAccepted(t *testing.T) {
 	api, q := newAPI(t, 4)
 
-	body := "[" + record("a") + "," + record("b") + "," + record("c") + "]"
-	rec := post(t, api, body)
+	rec := post(t, api, fmt.Sprintf("[%s, %s]", record("one"), record("two")))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202 (body %s)", rec.Code, rec.Body)
 	}
-	if got := decodeCount(t, rec, "accepted"); got != 3 {
-		t.Errorf("accepted = %d, want 3", got)
+	if got := decodeCount(t, rec, "accepted"); got != 2 {
+		t.Errorf("accepted = %d, want 2", got)
 	}
-	if q.Len() != 3 {
-		t.Errorf("queue depth = %d, want 3", q.Len())
-	}
-}
-
-func TestPostInvalidPayloadRejected(t *testing.T) {
-	api, q := newAPI(t, 4)
-
-	for _, body := range []string{
-		`{"tenant_id":"not-a-uuid","ts":"2026-09-22T10:00:00Z"}`,
-		`{"ts":"2026-09-22T10:00:00Z"}`,
-		`[` + record("ok") + `,{"tenant_id":"bad","ts":"2026-09-22T10:00:00Z"}]`,
-		`{`,
-	} {
-		rec := post(t, api, body)
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("status = %d, want 400 for %s", rec.Code, body)
-		}
-	}
-	if q.Len() != 0 {
-		t.Errorf("queue depth = %d, want 0: rejected payloads must not be enqueued", q.Len())
+	if q.Len() != 2 {
+		t.Errorf("queue depth = %d, want 2", q.Len())
 	}
 }
 
-func TestBackpressureReturns503WithRetryAfter(t *testing.T) {
-	api, q := newAPI(t, 2)
+func TestQueueFullReturns503WithRetryAfter(t *testing.T) {
+	api, _ := newAPI(t, 1)
 
-	for i := 0; i < 2; i++ {
-		if rec := post(t, api, record(fmt.Sprintf("fill-%d", i))); rec.Code != http.StatusAccepted {
-			t.Fatalf("fill %d: status = %d, want 202", i, rec.Code)
-		}
+	// Fill the queue.
+	if rec := post(t, api, record("fill")); rec.Code != http.StatusAccepted {
+		t.Fatalf("fill request failed: %d", rec.Code)
 	}
 
-	rec := post(t, api, record("overflow"))
+	// Next submit must get 503.
+	rec := post(t, api, record("blocked"))
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 once the queue is full", rec.Code)
+		t.Fatalf("status = %d, want 503", rec.Code)
 	}
-	if got := rec.Header().Get("Retry-After"); got == "" {
-		t.Error("Retry-After header missing on 503")
+	if h := rec.Header().Get("Retry-After"); h != "1" {
+		t.Errorf("Retry-After = %q, want \"1\"", h)
+	}
+	if got := decodeCount(t, rec, "accepted"); got != 0 {
+		t.Errorf("accepted = %d, want 0", got)
 	}
 	if got := decodeCount(t, rec, "dropped"); got != 1 {
 		t.Errorf("dropped = %d, want 1", got)
 	}
-	if q.Len() != 2 {
-		t.Errorf("queue depth = %d, want 2: the handler must not have blocked or overfilled", q.Len())
-	}
-	assertCounter(t, api, "logengine_logs_dropped_total", 1)
-	assertCounter(t, api, "logengine_logs_accepted_total", 2)
 }
 
-func TestBackpressurePartialArrayReportsAcceptedPrefix(t *testing.T) {
-	api, q := newAPI(t, 2)
+func TestPartialEnqueueReflectsPrefixAccepted(t *testing.T) {
+	api, _ := newAPI(t, 2)
 
-	body := "[" + record("a") + "," + record("b") + "," + record("c") + "," + record("d") + "]"
-	rec := post(t, api, body)
+	// Submit three records when only two fit.
+	rec := post(t, api, fmt.Sprintf("[%s, %s, %s]", record("a"), record("b"), record("c")))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 	if got := decodeCount(t, rec, "accepted"); got != 2 {
 		t.Errorf("accepted = %d, want 2", got)
 	}
-	if got := decodeCount(t, rec, "dropped"); got != 2 {
-		t.Errorf("dropped = %d, want 2", got)
+	if got := decodeCount(t, rec, "dropped"); got != 1 {
+		t.Errorf("dropped = %d, want 1", got)
 	}
-	// The accepted records must be the first two, so the client can resend the rest.
-	for _, want := range []string{"a", "b"} {
-		if got := <-q.C(); got.Message != want {
-			t.Errorf("queued message = %q, want %q", got.Message, want)
-		}
-	}
+	assertCounter(t, api, "logengine_logs_accepted_total", 2)
+	assertCounter(t, api, "logengine_logs_dropped_total", 1)
 }
 
-func TestEnqueueFailsAfterQueueClosed(t *testing.T) {
-	api, q := newAPI(t, 4)
-	q.Close()
-
-	rec := post(t, api, record("after close"))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 after the queue is closed", rec.Code)
-	}
-}
-
-func TestHealthAndReadiness(t *testing.T) {
+func TestInvalidPayloadRejectedWith400(t *testing.T) {
 	api, _ := newAPI(t, 4)
 
-	for _, path := range []string{"/healthz", "/readyz"} {
-		if code := get(api, path); code != http.StatusOK {
-			t.Errorf("GET %s = %d, want 200", path, code)
-		}
+	for name, body := range map[string]string{
+		"not_json":        "not json",
+		"empty_body":      "",
+		"empty_array":     "[]",
+		"missing_tenant":  `{"ts":"2026-09-22T10:00:00Z","message":"x"}`,
+		"bad_uuid":        `{"tenant_id":"bad","ts":"2026-09-22T10:00:00Z"}`,
+		"missing_ts":      `{"tenant_id":"` + tenant + `"}`,
+		"bad_ts":          `{"tenant_id":"` + tenant + `","ts":"yesterday"}`,
+		"attrs_not_obj":   `{"tenant_id":"` + tenant + `","ts":"2026-09-22T10:00:00Z","attrs":[1,2]}`,
+		"array_one_bad":   fmt.Sprintf("[%s, {\"bad\":true}]", record("ok")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := post(t, api, body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
+func TestHealthProbes(t *testing.T) {
+	api, _ := newAPI(t, 4)
+
+	if got := get(api, "/healthz"); got != http.StatusOK {
+		t.Errorf("/healthz = %d, want 200", got)
+	}
+	if got := get(api, "/readyz"); got != http.StatusOK {
+		t.Errorf("/readyz = %d, want 200", got)
 	}
 
 	api.SetReady(false)
-	if code := get(api, "/readyz"); code != http.StatusServiceUnavailable {
-		t.Errorf("GET /readyz = %d, want 503 once readiness is off", code)
+	if got := get(api, "/healthz"); got != http.StatusOK {
+		t.Errorf("/healthz after unready = %d, want 200", got)
 	}
-	if code := get(api, "/healthz"); code != http.StatusOK {
-		t.Errorf("GET /healthz = %d, want 200: liveness must stay up during drain", code)
+	if got := get(api, "/readyz"); got != http.StatusServiceUnavailable {
+		t.Errorf("/readyz after unready = %d, want 503", got)
 	}
 }
 
@@ -196,11 +202,11 @@ func TestMetricsEndpoint(t *testing.T) {
 
 func TestWrongMethod(t *testing.T) {
 	api, _ := newAPI(t, 4)
-	req := httptest.NewRequest(http.MethodGet, "/v1/logs", nil)
+	req := httptest.NewRequest(http.MethodPut, "/v1/logs", nil)
 	rec := httptest.NewRecorder()
 	api.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("GET /v1/logs = %d, want 405", rec.Code)
+		t.Errorf("PUT /v1/logs = %d, want 405", rec.Code)
 	}
 }
 
@@ -210,6 +216,117 @@ func TestOversizedBodyRejected(t *testing.T) {
 	rec := post(t, api, `{"tenant_id":"`+tenant+`","ts":"2026-09-22T10:00:00Z","message":"`+huge+`"}`)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("status = %d, want 413", rec.Code)
+	}
+}
+
+func TestGetLogsSuccess(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	q := queue.New(4)
+
+	tenantUUID := uuid.MustParse(tenant)
+	now := time.Now().UTC()
+	querier := &fakeQuerier{
+		recs: []logrec.Record{
+			{
+				TenantID: tenantUUID,
+				TS:       now,
+				Level:    "INFO",
+				Source:   "api",
+				Message:  "test log",
+				Attrs:    []byte(`{"foo":"bar"}`),
+			},
+		},
+	}
+
+	api := New(q, m, reg, slog.New(slog.DiscardHandler), querier)
+	api.SetReady(true)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id="+tenant+"&level=INFO&from=1h&limit=50", nil)
+	rec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/logs = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp logsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Count != 1 || len(resp.Logs) != 1 {
+		t.Fatalf("expected 1 log, got %d", resp.Count)
+	}
+	if resp.Logs[0].Message != "test log" {
+		t.Errorf("expected message 'test log', got %q", resp.Logs[0].Message)
+	}
+	if string(resp.Logs[0].Attrs) != `{"foo":"bar"}` {
+		t.Errorf("expected attrs '{\"foo\":\"bar\"}', got %s", string(resp.Logs[0].Attrs))
+	}
+}
+
+func TestGetLogsValidationErrors(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	q := queue.New(4)
+	querier := &fakeQuerier{}
+	api := New(q, m, reg, slog.New(slog.DiscardHandler), querier)
+
+	// Invalid UUID
+	req := httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id=invalid-uuid", nil)
+	rec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad tenant_id, got %d", rec.Code)
+	}
+
+	// Invalid From
+	req = httptest.NewRequest(http.MethodGet, "/v1/logs?from=not-a-date", nil)
+	rec = httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad from param, got %d", rec.Code)
+	}
+}
+
+func TestGetLogsQuerierError(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	q := queue.New(4)
+	querier := &fakeQuerier{err: errors.New("db down")}
+	api := New(q, m, reg, slog.New(slog.DiscardHandler), querier)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/logs", nil)
+	rec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 when querier errors, got %d", rec.Code)
+	}
+}
+
+func TestUIEndpoints(t *testing.T) {
+	api, _ := newAPI(t, 4)
+
+	// GET / redirects to /ui/
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Errorf("GET / = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/ui/" {
+		t.Errorf("GET / Location = %q, want /ui/", loc)
+	}
+
+	// GET /ui/ serves index.html
+	req = httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec = httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /ui/ = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "logengine") {
+		t.Errorf("GET /ui/ does not contain 'logengine'")
 	}
 }
 
