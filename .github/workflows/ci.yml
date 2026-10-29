@@ -18,6 +18,12 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Run gofmt -w on:"; echo "$unformatted"; exit 1
+          fi
 
   lint:
     runs-on: ubuntu-latest
