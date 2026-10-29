@@ -114,8 +114,9 @@ func (a *App) Run(ctx context.Context) error {
 
 	select {
 	case err := <-serveErr:
-		// The server stopped on its own; still drain the pipeline.
-		a.shutdown()
+		// The server stopped on its own; still drain the pipeline. shutdown
+		// logs its own failures, and the serve error is the one returned.
+		_ = a.shutdown()
 		if err != nil {
 			return fmt.Errorf("http server: %w", err)
 		}
