@@ -272,16 +272,32 @@ func TestGetLogsValidationErrors(t *testing.T) {
 	querier := &fakeQuerier{}
 	api := New(q, m, reg, slog.New(slog.DiscardHandler), querier)
 
-	// Invalid UUID
-	req := httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id=invalid-uuid", nil)
+	// Missing tenant_id
+	req := httptest.NewRequest(http.MethodGet, "/v1/logs?level=ERROR", nil)
 	rec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing tenant_id, got %d", rec.Code)
+	}
+
+	// Blank tenant_id
+	req = httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id=%20", nil)
+	rec = httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for blank tenant_id, got %d", rec.Code)
+	}
+
+	// Invalid UUID
+	req = httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id=invalid-uuid", nil)
+	rec = httptest.NewRecorder()
 	api.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for bad tenant_id, got %d", rec.Code)
 	}
 
 	// Invalid From
-	req = httptest.NewRequest(http.MethodGet, "/v1/logs?from=not-a-date", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id="+tenant+"&from=not-a-date", nil)
 	rec = httptest.NewRecorder()
 	api.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -296,7 +312,7 @@ func TestGetLogsQuerierError(t *testing.T) {
 	querier := &fakeQuerier{err: errors.New("db down")}
 	api := New(q, m, reg, slog.New(slog.DiscardHandler), querier)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/logs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id="+tenant, nil)
 	rec := httptest.NewRecorder()
 	api.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {

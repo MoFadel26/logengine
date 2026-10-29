@@ -109,7 +109,7 @@ Navigate to `http://localhost:8080/` (or `/ui/`) in any browser:
 ### Query API
 
 `GET /v1/logs` accepts the following query parameters:
-- `tenant_id`: UUID (e.g. `00000000-0000-0000-0000-000000000001`)
+- `tenant_id`: UUID, required (e.g. `00000000-0000-0000-0000-000000000001`). Missing or invalid returns `400`.
 - `level`: Log level (`INFO`, `WARN`, `ERROR`, `DEBUG`)
 - `source`: Originating service name
 - `q`: Case-insensitive substring match on message
@@ -117,7 +117,7 @@ Navigate to `http://localhost:8080/` (or `/ui/`) in any browser:
 - `limit`: Number of rows to return (default 100, max 1000)
 
 ```bash
-curl "http://localhost:8080/v1/logs?level=ERROR&from=24h&limit=50"
+curl "http://localhost:8080/v1/logs?tenant_id=00000000-0000-0000-0000-000000000001&level=ERROR&from=24h&limit=50"
 ```
 
 ### Ingest API

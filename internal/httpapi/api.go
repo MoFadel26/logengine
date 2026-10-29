@@ -164,14 +164,17 @@ func (a *API) getLogs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var params pgstore.QueryParams
 
-	if tenantStr := strings.TrimSpace(q.Get("tenant_id")); tenantStr != "" {
-		id, err := uuid.Parse(tenantStr)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid tenant_id: must be a valid UUID"})
-			return
-		}
-		params.TenantID = &id
+	tenantStr := strings.TrimSpace(q.Get("tenant_id"))
+	if tenantStr == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "tenant_id is required"})
+		return
 	}
+	id, err := uuid.Parse(tenantStr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid tenant_id: must be a valid UUID"})
+		return
+	}
+	params.TenantID = &id
 
 	params.Level = strings.TrimSpace(q.Get("level"))
 	params.Source = strings.TrimSpace(q.Get("source"))

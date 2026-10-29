@@ -1005,8 +1005,9 @@
       const startTime = performance.now();
       const params = new URLSearchParams();
 
-      const tenant = filterTenant.value.trim();
-      if (tenant) params.set("tenant_id", tenant);
+      // The API requires tenant_id; fall back to the demo tenant when empty.
+      if (!filterTenant.value.trim()) filterTenant.value = DEMO_TENANT;
+      params.set("tenant_id", filterTenant.value.trim());
 
       const level = filterLevel.value;
       if (level) params.set("level", level);
