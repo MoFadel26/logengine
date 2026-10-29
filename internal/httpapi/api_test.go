@@ -138,15 +138,15 @@ func TestInvalidPayloadRejectedWith400(t *testing.T) {
 	api, _ := newAPI(t, 4)
 
 	for name, body := range map[string]string{
-		"not_json":        "not json",
-		"empty_body":      "",
-		"empty_array":     "[]",
-		"missing_tenant":  `{"ts":"2026-09-22T10:00:00Z","message":"x"}`,
-		"bad_uuid":        `{"tenant_id":"bad","ts":"2026-09-22T10:00:00Z"}`,
-		"missing_ts":      `{"tenant_id":"` + tenant + `"}`,
-		"bad_ts":          `{"tenant_id":"` + tenant + `","ts":"yesterday"}`,
-		"attrs_not_obj":   `{"tenant_id":"` + tenant + `","ts":"2026-09-22T10:00:00Z","attrs":[1,2]}`,
-		"array_one_bad":   fmt.Sprintf("[%s, {\"bad\":true}]", record("ok")),
+		"not_json":       "not json",
+		"empty_body":     "",
+		"empty_array":    "[]",
+		"missing_tenant": `{"ts":"2026-09-22T10:00:00Z","message":"x"}`,
+		"bad_uuid":       `{"tenant_id":"bad","ts":"2026-09-22T10:00:00Z"}`,
+		"missing_ts":     `{"tenant_id":"` + tenant + `"}`,
+		"bad_ts":         `{"tenant_id":"` + tenant + `","ts":"yesterday"}`,
+		"attrs_not_obj":  `{"tenant_id":"` + tenant + `","ts":"2026-09-22T10:00:00Z","attrs":[1,2]}`,
+		"array_one_bad":  fmt.Sprintf("[%s, {\"bad\":true}]", record("ok")),
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := post(t, api, body)
