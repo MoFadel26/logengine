@@ -201,6 +201,10 @@ Integration tests start a throwaway Postgres with testcontainers and apply
 `db/migrations` directly, so they cannot pass against a schema that has drifted
 from the migrations.
 
+To skip Docker, set `PGTEST_DATABASE_URL` to an existing server (e.g.
+`postgres://user@localhost:5432/postgres?sslmode=disable`); each test creates
+its own database there and drops it afterwards.
+
 ## Building
 
 ```bash

@@ -1,4 +1,4 @@
-// Package pgtest starts a throwaway Postgres for integration tests.
+// Package pgtest provides a throwaway Postgres database for integration tests.
 //
 // The schema is applied from db/migrations, the same files golang-migrate runs
 // in production, so these tests cannot pass against a schema that has drifted
@@ -8,13 +8,16 @@ package pgtest
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -70,9 +73,10 @@ func applyMigrations(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-// Start boots a Postgres container with db/migrations applied and partitions
-// created around today, and returns its DSN. The container is terminated when
-// the test finishes.
+// Start returns the DSN of a fresh database with db/migrations applied and
+// partitions created around today. If PGTEST_DATABASE_URL is set, the database
+// is created on that server and dropped when the test finishes; otherwise a
+// Postgres container is started and terminated when the test finishes.
 func Start(t *testing.T) string {
 	t.Helper()
 	if testing.Short() {
@@ -80,6 +84,44 @@ func Start(t *testing.T) string {
 	}
 
 	ctx := context.Background()
+	var dsn string
+	if baseURL := os.Getenv("PGTEST_DATABASE_URL"); baseURL != "" {
+		dsn = createDatabase(ctx, t, baseURL)
+	} else {
+		dsn = startContainer(ctx, t)
+	}
+
+	setupCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(setupCtx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = conn.Close(setupCtx) }()
+
+	// CURRENT_DATE below is session-dependent; pin it to UTC so partitions
+	// line up with the UTC timestamps the tests write.
+	if _, err := conn.Exec(setupCtx, "SET TIME ZONE 'UTC'"); err != nil {
+		t.Fatalf("set time zone: %v", err)
+	}
+	if err := applyMigrations(setupCtx, conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	// Uses the partition helper the migrations define, so the tests exercise
+	// it rather than a hand-rolled copy.
+	if _, err := conn.Exec(setupCtx,
+		"SELECT logs_create_partitions_between(CURRENT_DATE - $1::int, CURRENT_DATE + $2::int)",
+		partitionSpan, partitionSpan,
+	); err != nil {
+		t.Fatalf("create partitions: %v", err)
+	}
+	return dsn
+}
+
+// startContainer boots a Postgres container, terminates it when the test
+// finishes, and returns its DSN.
+func startContainer(ctx context.Context, t *testing.T) string {
+	t.Helper()
 	ctr, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("logengine"),
 		postgres.WithUsername("logengine"),
@@ -99,30 +141,41 @@ func Start(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-
-	setupCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	conn, err := pgx.Connect(setupCtx, dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer conn.Close(setupCtx)
-
-	// CURRENT_DATE below is session-dependent; pin it to UTC so partitions
-	// line up with the UTC timestamps the tests write.
-	if _, err := conn.Exec(setupCtx, "SET TIME ZONE 'UTC'"); err != nil {
-		t.Fatalf("set time zone: %v", err)
-	}
-	if err := applyMigrations(setupCtx, conn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-	// Uses the partition helper the migrations define, so the tests exercise
-	// it rather than a hand-rolled copy.
-	if _, err := conn.Exec(setupCtx,
-		"SELECT logs_create_partitions_between(CURRENT_DATE - $1::int, CURRENT_DATE + $2::int)",
-		partitionSpan, partitionSpan,
-	); err != nil {
-		t.Fatalf("create partitions: %v", err)
-	}
 	return dsn
+}
+
+// createDatabase creates a uniquely named database on the server at baseURL,
+// drops it when the test finishes, and returns its DSN. The random name keeps
+// parallel tests and packages from colliding on a shared server.
+func createDatabase(ctx context.Context, t *testing.T, baseURL string) string {
+	t.Helper()
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		t.Fatalf("parse PGTEST_DATABASE_URL: %v", err)
+	}
+	name := "pgtest_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	ident := pgx.Identifier{name}.Sanitize()
+
+	conn, err := pgx.Connect(ctx, baseURL)
+	if err != nil {
+		t.Fatalf("connect to PGTEST_DATABASE_URL: %v", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	if _, err := conn.Exec(ctx, "CREATE DATABASE "+ident); err != nil {
+		t.Fatalf("create database %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		conn, err := pgx.Connect(ctx, baseURL)
+		if err != nil {
+			t.Logf("connect to drop database %s: %v", name, err)
+			return
+		}
+		defer func() { _ = conn.Close(ctx) }()
+		if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+ident+" WITH (FORCE)"); err != nil {
+			t.Logf("drop database %s: %v", name, err)
+		}
+	})
+
+	u.Path = "/" + name
+	return u.String()
 }
