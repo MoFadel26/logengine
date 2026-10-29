@@ -138,15 +138,15 @@ func TestInvalidPayloadRejectedWith400(t *testing.T) {
 	api, _ := newAPI(t, 4)
 
 	for name, body := range map[string]string{
-		"not_json":        "not json",
-		"empty_body":      "",
-		"empty_array":     "[]",
-		"missing_tenant":  `{"ts":"2026-09-22T10:00:00Z","message":"x"}`,
-		"bad_uuid":        `{"tenant_id":"bad","ts":"2026-09-22T10:00:00Z"}`,
-		"missing_ts":      `{"tenant_id":"` + tenant + `"}`,
-		"bad_ts":          `{"tenant_id":"` + tenant + `","ts":"yesterday"}`,
-		"attrs_not_obj":   `{"tenant_id":"` + tenant + `","ts":"2026-09-22T10:00:00Z","attrs":[1,2]}`,
-		"array_one_bad":   fmt.Sprintf("[%s, {\"bad\":true}]", record("ok")),
+		"not_json":       "not json",
+		"empty_body":     "",
+		"empty_array":    "[]",
+		"missing_tenant": `{"ts":"2026-09-22T10:00:00Z","message":"x"}`,
+		"bad_uuid":       `{"tenant_id":"bad","ts":"2026-09-22T10:00:00Z"}`,
+		"missing_ts":     `{"tenant_id":"` + tenant + `"}`,
+		"bad_ts":         `{"tenant_id":"` + tenant + `","ts":"yesterday"}`,
+		"attrs_not_obj":  `{"tenant_id":"` + tenant + `","ts":"2026-09-22T10:00:00Z","attrs":[1,2]}`,
+		"array_one_bad":  fmt.Sprintf("[%s, {\"bad\":true}]", record("ok")),
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := post(t, api, body)
@@ -272,16 +272,32 @@ func TestGetLogsValidationErrors(t *testing.T) {
 	querier := &fakeQuerier{}
 	api := New(q, m, reg, slog.New(slog.DiscardHandler), querier)
 
-	// Invalid UUID
-	req := httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id=invalid-uuid", nil)
+	// Missing tenant_id
+	req := httptest.NewRequest(http.MethodGet, "/v1/logs?level=ERROR", nil)
 	rec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing tenant_id, got %d", rec.Code)
+	}
+
+	// Blank tenant_id
+	req = httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id=%20", nil)
+	rec = httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for blank tenant_id, got %d", rec.Code)
+	}
+
+	// Invalid UUID
+	req = httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id=invalid-uuid", nil)
+	rec = httptest.NewRecorder()
 	api.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for bad tenant_id, got %d", rec.Code)
 	}
 
 	// Invalid From
-	req = httptest.NewRequest(http.MethodGet, "/v1/logs?from=not-a-date", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id="+tenant+"&from=not-a-date", nil)
 	rec = httptest.NewRecorder()
 	api.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -296,7 +312,7 @@ func TestGetLogsQuerierError(t *testing.T) {
 	querier := &fakeQuerier{err: errors.New("db down")}
 	api := New(q, m, reg, slog.New(slog.DiscardHandler), querier)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/logs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/logs?tenant_id="+tenant, nil)
 	rec := httptest.NewRecorder()
 	api.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {

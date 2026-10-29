@@ -87,26 +87,3 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
-        # Sidecar: forwards/scrapes API logs+metrics over localhost.
-        # Containers in the same pod share one network namespace (same
-        # loopback interface, same port space), so the sidecar can reach
-        # the api container at localhost:8080 without going through the
-        # Service/ClusterIP. This is also why the api and log-forwarder
-        # containers must not both try to bind the same port.
-        - name: log-forwarder
-          image: busybox:1.36
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              while true; do
-                wget -q -O- http://localhost:8080/healthz >/dev/null 2>&1 \
-                  && echo "$(date -Iseconds) api reachable via localhost:8080 (shared pod network namespace)"
-                sleep 15
-              done
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              cpu: 50m
-              memory: 32Mi

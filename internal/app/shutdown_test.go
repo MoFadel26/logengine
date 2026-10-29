@@ -189,7 +189,7 @@ func postLog(client *http.Client, base, tenant, msg string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode, nil
 }
@@ -201,7 +201,7 @@ func waitReady(t *testing.T, client *http.Client, base string) {
 		resp, err := client.Get(base + "/readyz")
 		if err == nil {
 			_, _ = io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return
 			}
