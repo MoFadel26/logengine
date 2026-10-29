@@ -206,6 +206,57 @@ To skip Docker, set `PGTEST_DATABASE_URL` to an existing server (e.g.
 `postgres://user@localhost:5432/postgres?sslmode=disable`); each test creates
 its own database there and drops it afterwards.
 
+## Load test
+
+`cmd/loadtest` sends JSON arrays of records to `POST /v1/logs` and reports
+status codes, accepted/dropped counts, client latency, and rows/sec persisted
+(from the server's `logengine_rows_written_total`), then waits for the queue to
+drain and prints the server counter deltas.
+
+```bash
+export DATABASE_URL='postgres://user@localhost:5432/logengine_loadtest?sslmode=disable'
+createdb logengine_loadtest
+migrate -path db/migrations -database "$DATABASE_URL" up
+ROWS=1000000 ./db/seed/seed.sh
+psql "$DATABASE_URL" -c 'SELECT logs_create_partitions_between(CURRENT_DATE, CURRENT_DATE + 1);'
+go run ./cmd/api &                                                # or QUEUE_SIZE=1000 go run ./cmd/api
+go run ./cmd/loadtest -duration 30s -c 20 -batch 100 -rate 600    # fixed rate
+go run ./cmd/loadtest -duration 30s -c 50 -batch 100              # as fast as possible
+```
+
+Setup: Apple M1 Pro (10 cores, 16 GB), PostgreSQL 18.6 from Postgres.app with
+its default config — not the PostgreSQL 16 the Kubernetes overlay runs. Client,
+API and database all ran on the same machine and shared its CPU. The table
+started at 1M seeded rows and grew to 17.6M over the runs below, in the order
+listed. Each run lasted 30 s with 100 records per request, `WORKER_COUNT=4`.
+
+| Load | `QUEUE_SIZE` | Rows/sec persisted | p50 | p99 | 503s |
+|---|---|---|---|---|---|
+| 250 req/s | 10000 | 24,850 | 0.42 ms | 3.16 ms | 0 |
+| 500 req/s | 10000 | 49,716 | 0.34 ms | 2.58 ms | 0 |
+| 600 req/s | 10000 | 59,832 | 0.32 ms | 1.27 ms | 0 |
+| 750 req/s | 10000 | 71,182 | 0.36 ms | 8.53 ms | 51 of 21,414 (0.24%) |
+| 50 senders, no limit | 10000 | 133,238 | 4.38 ms | 18.75 ms | 197,207 of 235,343 (83.8%) |
+| 50 senders, no limit | 1000 | 105,387 | 4.42 ms | 20.99 ms | 206,793 of 236,753 (87.3%) |
+| 500 req/s | 1000 | 49,800 | 0.35 ms | 0.89 ms | 47 of 14,998 (0.31%) |
+
+Latency is client-side, for the whole request. The highest load with no 503s
+was 600 req/s (about 60,000 rows/sec). That limit moves: in an earlier pass,
+with the table at about 20M rows, 600 and 500 req/s got 36 and 14 503s.
+Postgres logged a checkpoint every 8–9 s during the runs ("checkpoints are
+occurring too frequently", `max_wal_size` 1GB). At 50,000 rows/sec a
+10,000-record queue holds 0.2 s of traffic, so a short write stall is enough to
+fill it.
+
+Under overload every 503 carried `Retry-After: 1` and its body reported
+`accepted`/`dropped` counts. The database kept absorbing 133,238 rows/sec with
+the default queue and 105,387 with `QUEUE_SIZE=1000`. `/healthz` answered 200
+within 6 ms throughout, and RSS stayed between 36 and 45 MB. After each run
+drained, `logengine_logs_accepted_total` equalled `logengine_rows_written_total`
+(4,009,500 and 3,165,000), `logengine_logs_lost_total` was 0, and `count(*)` on
+`logs` grew by exactly that many rows. Each refused request logs a WARN line;
+the default-queue overload run wrote 26 MB of server log in 30 s.
+
 ## Building
 
 ```bash
