@@ -34,6 +34,7 @@ exits non-zero — losing records is never a silent, zero-exit outcome.
 | Path | Contents |
 |---|---|
 | `cmd/api/` | Service entrypoint |
+| `cmd/loadtest/` | Load generator for `POST /v1/logs` |
 | `internal/` | Handler, queue, worker pool, pgx store, config, metrics, embedded UI |
 | `db/migrations/` | golang-migrate up/down pairs |
 | `db/seed/` | Synthetic data generator |
