@@ -59,7 +59,8 @@ Then apply the schema and create partitions:
 
 ```bash
 kubectl -n logengine-local port-forward svc/postgres 55432:5432 &
-export DATABASE_URL='postgres://logengine:logengine@127.0.0.1:55432/logengine?sslmode=disable'\nmigrate -path db/migrations -database "$DATABASE_URL" up
+export DATABASE_URL='postgres://logengine:logengine@127.0.0.1:55432/logengine?sslmode=disable'
+migrate -path db/migrations -database "$DATABASE_URL" up
 psql "$DATABASE_URL" -c 'SELECT logs_create_partitions_between(CURRENT_DATE - 2, CURRENT_DATE + 2);'
 ```
 
@@ -177,7 +178,8 @@ is the right call at that selectivity and table size.
 Structured JSON logs via `log/slog`. Prometheus metrics on `/metrics`:
 
 | Metric | Meaning |
-|---|---|\n| `logengine_queue_depth` | Current queue occupancy |
+|---|---|
+| `logengine_queue_depth` | Current queue occupancy |
 | `logengine_logs_accepted_total` | Records queued |
 | `logengine_logs_dropped_total` | Records refused — queue full |
 | `logengine_logs_lost_total` | Accepted records abandoned unwritten |
